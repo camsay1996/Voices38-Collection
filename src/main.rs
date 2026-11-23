@@ -45,7 +45,7 @@ struct Voices38App {
 
 impl Default for Voices38App {
     fn default() -> Self {
-        let mut games: Vec<Game> = Vec::new(); // FIX 1: Explicitly tell Rust what type this is
+        let mut games: Vec<Game> = Vec::new();
         let mut load_error = None;
 
         match fs::read_to_string("games.json") {
@@ -78,10 +78,24 @@ impl Default for Voices38App {
 // LINK CHECKER
 // ============================================================
 fn check_url(url: &str) -> LinkStatus {
+    use std::net::ToSocketAddrs;
+
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(8))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        .resolver(|addr: &str| {
+            // addr will be something like "buzzheavier.com:443"
+            if addr.starts_with("buzzheavier.com") {
+                // Return the hardcoded Cloudflare IP with the correct port
+                let port = addr.rsplit(':').next().unwrap_or("443");
+                let port: u16 = port.parse().unwrap_or(443);
+                Ok(vec![std::net::SocketAddr::from(([104, 18, 4, 146], port))])
+            } else {
+                // Normal DNS for everything else
+                addr.to_socket_addrs().map(|iter| iter.collect())
+            }
+        })
         .build();
 
     match agent.head(url).call() {
@@ -141,7 +155,6 @@ impl eframe::App for Voices38App {
         }
 
         // 4. POPUP WINDOW FOR UPDATER
-        // FIX 2: Safely handle the borrow checker for the popup window
         let mut close_popup = false;
         let popup_msg = self.update_status.clone();
 
@@ -215,11 +228,22 @@ impl eframe::App for Voices38App {
                         // --- AUTO UPDATER BUTTON ---
                         if ui.button("⬇ Update List").clicked() {
                             self.update_status = None;
-                            let url = "https://gist.githubusercontent.com/camsay1996/7bdb1b8ce11ec7aad68fca8c86c5c6ba/raw/aa2c00c2edfd136fd9d8488ffb5675a31ec7f498/games.json";
                             
-                            // Note: This blocks the UI for a fraction of a second. 
-                            // That's totally fine for a tiny JSON file.
-                            let res = ureq::get(url).call();
+                            // Get current timestamp to bypass GitHub's raw file cache
+                            let timestamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs();
+
+                            // Use the LATEST URL (removed the commit hash) + add cache buster
+                            let url = format!(
+                                "https://gist.githubusercontent.com/camsay1996/7bdb1b8ce11ec7aad68fca8c86c5c6ba/raw/games.json?t={}",
+                                timestamp
+                            );
+
+                            // Make the request
+                            let res = ureq::get(&url).call();
+                            
                             match res {
                                 Ok(response) => {
                                     let mut json_str = String::new();
@@ -230,7 +254,10 @@ impl eframe::App for Voices38App {
                                                 self.total_links = self.games.iter().flat_map(|g| &g.links).count();
                                                 self.statuses.clear();
                                                 self.load_error = None;
+                                                
+                                                // Show success message
                                                 self.update_status = Some("✅ Successfully updated games list!".to_string());
+                                                ctx.request_repaint(); // <-- Forces the UI to refresh immediately
                                             } else {
                                                 self.update_status = Some("❌ Failed to save games.json to disk.".to_string());
                                             }
@@ -288,7 +315,6 @@ impl eframe::App for Voices38App {
                             .fill(egui::Color32::from_rgb(49, 50, 68))
                             .rounding(egui::Rounding::same(10.0))
                             .inner_margin(15.0)
-                            // FIX 3: Explicitly set 1.0 as f32
                             .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(69, 71, 90)));
 
                         card_frame.show(ui, |ui| {
